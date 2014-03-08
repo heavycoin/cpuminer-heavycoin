@@ -1,4 +1,3 @@
-
 if WANT_JANSSON
 JANSSON_INCLUDES= -I$(top_srcdir)/compat/jansson
 else
@@ -30,6 +29,6 @@ if ARCH_ARM
 minerd_SOURCES += sha2-arm.S scrypt-arm.S
 endif
 minerd_LDFLAGS	= $(PTHREAD_FLAGS)
-minerd_LDADD	= @LIBCURL@ @JANSSON_LIBS@ @PTHREAD_LIBS@ @WS2_LIBS@ -lssl
+minerd_LDADD	= @LIBCURL@ @JANSSON_LIBS@ @PTHREAD_LIBS@ @WS2_LIBS@ -lcrypto
 minerd_CPPFLAGS = @LIBCURL_CPPFLAGS@
 
