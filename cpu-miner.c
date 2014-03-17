@@ -40,6 +40,7 @@
 
 #define PROGRAM_NAME		"minerd"
 #define LP_SCANTIME		60
+#define HEAVYCOIN_BLKHDR_SZ	84
 
 #ifdef __linux /* Linux specific policy and affinity management */
 #include <sched.h>
@@ -100,12 +101,6 @@ struct workio_cmd {
 	} u;
 };
 
-enum sha256_algos {
-	ALGO_SCRYPT,		/* scrypt(1024,1,1) */
-	ALGO_SHA256D,		/* SHA-256d */
-	ALGO_HEAVY,		/* Heavycoin hash */
-};
-
 static const char *algo_names[] = {
 	[ALGO_SCRYPT]		= "scrypt",
 	[ALGO_SHA256D]		= "sha256d",
@@ -129,10 +124,11 @@ int opt_timeout = 270;
 static int opt_scantime = 5;
 static json_t *opt_config;
 static const bool opt_time = true;
-static enum sha256_algos opt_algo = ALGO_SCRYPT;
+enum sha256_algos opt_algo = ALGO_SCRYPT;
 static int opt_n_threads;
 static bool opt_trust_pool = false;
 static uint16_t opt_vote = 9999;
+static uint16_t last_vote = 0;
 static int num_processors;
 static char *rpc_url;
 static char *rpc_userpass;
@@ -298,7 +294,7 @@ static bool work_decode(const json_t *val, struct work *work)
 		goto err_out;
 	}
 	if (unlikely(!jobj_binary(val, "maxvote", &work->maxvote, sizeof(work->maxvote)))) {
-		applog(LOG_ERR, "JSON inval target");
+		applog(LOG_ERR, "JSON inval maxvote");
 		goto err_out;
 	}
 
@@ -327,12 +323,21 @@ static void share_result(int result, const char *reason)
 	pthread_mutex_unlock(&stats_lock);
 	
 	sprintf(s, hashrate >= 1e6 ? "%.0f" : "%.2f", 1e-3 * hashrate);
-	applog(LOG_INFO, "accepted: %lu/%lu (%.2f%%), %s khash/s %s",
-		   accepted_count,
-		   accepted_count + rejected_count,
-		   100. * accepted_count / (accepted_count + rejected_count),
-		   s,
-		   result ? "(yay!!!)" : "(booooo)");
+
+	if (opt_algo == ALGO_HEAVY)
+		applog(LOG_INFO, "accepted: %lu/%lu (%.2f%%), %s khash/s, cast vote %hu, %s",
+			accepted_count,
+			accepted_count + rejected_count,
+			100. * accepted_count / (accepted_count + rejected_count),
+			s, last_vote,
+			result ? "(yay!!!)" : "(booooo)");
+	else
+		applog(LOG_INFO, "accepted: %lu/%lu (%.2f%%), %s khash/s %s",
+			accepted_count,
+			accepted_count + rejected_count,
+			100. * accepted_count / (accepted_count + rejected_count),
+			s,
+			result ? "(yay!!!)" : "(booooo)");
 
 	if (opt_debug && reason)
 		applog(LOG_DEBUG, "DEBUG: reject reason: %s", reason);
@@ -355,16 +360,33 @@ static bool submit_upstream_work(CURL *curl, struct work *work)
 
 	if (have_stratum) {
 		uint32_t ntime, nonce;
-		char *ntimestr, *noncestr, *xnonce2str;
+		uint16_t vote; // Heavycoin block reward vote
+		char *ntimestr, *noncestr, *xnonce2str, *votestr;
 
 		le32enc(&ntime, work->data[17]);
 		le32enc(&nonce, work->data[19]);
+
+		if (opt_algo == ALGO_HEAVY) {
+			uint16_t *ext = (uint16_t *)&work->data[20];
+			be16enc(&vote,  ext[0]);
+		}
+
 		ntimestr = bin2hex((const unsigned char *)(&ntime), 4);
 		noncestr = bin2hex((const unsigned char *)(&nonce), 4);
+                if (opt_algo == ALGO_HEAVY)
+			votestr = bin2hex((const unsigned char *)(&vote), 2);
 		xnonce2str = bin2hex(work->xnonce2, work->xnonce2_len);
-		sprintf(s,
-			"{\"method\": \"mining.submit\", \"params\": [\"%s\", \"%s\", \"%s\", \"%s\", \"%s\"], \"id\":4}",
-			rpc_user, work->job_id, xnonce2str, ntimestr, noncestr);
+                if (opt_algo == ALGO_HEAVY)
+			sprintf(s,
+				"{\"method\": \"mining.submit\", \"params\": [\"%s\", \"%s\", \"%s\", \"%s\", \"%s\", \"%s\"], \"id\":4}",
+				rpc_user, work->job_id, xnonce2str, ntimestr, noncestr, votestr);
+		else
+			sprintf(s,
+				"{\"method\": \"mining.submit\", \"params\": [\"%s\", \"%s\", \"%s\", \"%s\", \"%s\"], \"id\":4}",
+				rpc_user, work->job_id, xnonce2str, ntimestr, noncestr);
+
+                if (opt_algo == ALGO_HEAVY)
+			free(votestr);
 		free(ntimestr);
 		free(noncestr);
 		free(xnonce2str);
@@ -376,7 +398,6 @@ static bool submit_upstream_work(CURL *curl, struct work *work)
 	} else {
 
 		/* build hex string */
-
                 if (opt_algo != ALGO_HEAVY) {
                     for (i = 0; i < ARRAY_SIZE(work->data); i++)
 			le32enc(work->data + i, work->data[i]);
@@ -641,12 +662,19 @@ static void stratum_gen_work(struct stratum_ctx *sctx, struct work *work)
 	memcpy(work->xnonce2, sctx->job.xnonce2, sctx->xnonce2_size);
 
 	/* Generate merkle root */
-	sha256d(merkle_root, sctx->job.coinbase, sctx->job.coinbase_size);
+	if (opt_algo == ALGO_HEAVY)
+		heavycoin_hash(sctx->job.coinbase, merkle_root, sctx->job.coinbase_size);
+	else
+		sha256d(merkle_root, sctx->job.coinbase, sctx->job.coinbase_size);
+
 	for (i = 0; i < sctx->job.merkle_count; i++) {
 		memcpy(merkle_root + 32, sctx->job.merkle[i], 32);
-		sha256d(merkle_root, merkle_root, 64);
+                if (opt_algo == ALGO_HEAVY)
+			heavycoin_hash(merkle_root, merkle_root, 64);
+                else
+			sha256d(merkle_root, merkle_root, 64);
 	}
-	
+
 	/* Increment extranonce2 */
 	for (i = 0; i < sctx->xnonce2_size && !++sctx->job.xnonce2[i]; i++);
 
@@ -659,8 +687,21 @@ static void stratum_gen_work(struct stratum_ctx *sctx, struct work *work)
 		work->data[9 + i] = be32dec((uint32_t *)merkle_root + i);
 	work->data[17] = le32dec(sctx->job.ntime);
 	work->data[18] = le32dec(sctx->job.nbits);
-	work->data[20] = 0x80000000;
-	work->data[31] = 0x00000280;
+
+	if (opt_algo == ALGO_HEAVY) {
+		for (i = 0; i < 20; i++)
+			work->data[i] = be32dec((uint32_t *)&work->data[i]);
+
+		uint16_t *ext = (uint16_t *)&work->data[20];
+		ext[1] = be16dec(sctx->job.nreward);
+		work->data[21] = 0x80000000;
+		work->data[31] = 0x000002A0;
+		work->maxvote = be16dec(sctx->job.nmaxvote);
+	}
+	else {
+		work->data[20] = 0x80000000;
+		work->data[31] = 0x00000280;
+	}
 
 	pthread_mutex_unlock(&sctx->work_lock);
 
@@ -779,73 +820,38 @@ static void *miner_thread(void *userdata)
 			break;
                 case ALGO_HEAVY:
                 {
-                    rc = 0;
-                    uint32_t hash[8] __attribute__((aligned(32)));
-                    uint32_t start_nonce = work.data[19];
-                    // fprintf(stderr, "Lets do some heavy mining!\n");
-                    // fprintf(stderr, "  target = ");
-                    // int i;
-                    // for (i = 7; i >= 0; i--)
-                    //     fprintf(stderr, "%08x", work.target[i]);
-                    // fprintf(stderr, "\n");
-                    // fprintf(stderr, "  maxvote = %hu\n", work.maxvote);
+			rc = 0;
+			DATA_ALIGN64(uint32_t hash[8]);
+			uint32_t start_nonce = work.data[19];
+			uint16_t *ext = (uint16_t *)&work.data[20];
 
-                    // fprintf(stderr, "  nonce          = %u\n", work.data[19]);
-                    // fprintf(stderr, "  work.target[7] = %u\n", work.target[7]);
-                    uint16_t *ext = (uint16_t *)&work.data[20];
-                    // fprintf(stderr, "  vote           = %u\n", ext[0]);
-                    // fprintf(stderr, "  reward         = %u\n", ext[1]);
+			if (opt_vote > work.maxvote) {
+				printf("Warning: Your block reward vote (%hu) exceeds "
+					"the maxvote reported by the pool (%hu).\n",
+					opt_vote, work.maxvote);
+			}
 
-                    if (opt_vote > work.maxvote) {
-                        printf("Warning: Your block reward vote (%hu) exceeds "
-                               "the maxvote reported by the pool (%hu).\n",
-                               opt_vote, work.maxvote);
-                    }
+			if (opt_trust_pool && opt_vote > work.maxvote) {
+				printf("Warning: Capping block reward vote to maxvote reported by pool.\n");
+				last_vote = ext[0] = work.maxvote;
+			}
+			else
+				last_vote = ext[0] = opt_vote;
 
-                    if (opt_trust_pool && opt_vote > work.maxvote) {
-                        printf("Warning: Capping block reward vote to maxvote reported by pool.\n");
-                        ext[0] = work.maxvote;
-                    }
-                    else
-                        ext[0] = opt_vote;
+			do {
+				int v = heavycoin_scanhash((unsigned char *)hash, (unsigned char *)work.data, HEAVYCOIN_BLKHDR_SZ);
+				if (v && hash[7] <= work.target[7]) {
+					if (fulltest(hash, work.target)) {
+						hashes_done = work.data[19] - start_nonce;
+						rc = 1;
+						break;
+					}
+				}
+				work.data[19]++;
+			} while (work.data[19] < max_nonce && !work_restart[thr_id].restart);
+			hashes_done = work.data[19] - start_nonce;
 
-                    // fprintf(stderr, "  vote'          = %u\n", ext[0]);
-
-                    do {
-                        heavycoin_hash((unsigned char *)work.data, (unsigned char *)hash);
-
-                        if (hash[7] <= work.target[7]) {
-                            // fprintf(stderr, "Maybe found block\n");
-                            if (fulltest(hash, work.target)) {
-                                // fprintf(stderr, "Definitely found block\n");
-
-                                // fprintf(stderr, "  nonce  = %u\n", work.data[19]);
-                                // fprintf(stderr, "  vote   = %u\n", ext[0]);
-                                // fprintf(stderr, "  reward = %u\n", ext[1]);
-
-                                // fprintf(stderr, "  hash[7]   = %08x\n", hash[7]);
-                                // fprintf(stderr, "  target[7] = %08x\n", work.target[7]);
-
-                                // fprintf(stderr, "  block   = ");
-                                // for (i = 0; i < 32; i++)
-                                //     fprintf(stderr, "%08x", work.data[i]);
-                                // fprintf(stderr, "\n");
-
-                                // fprintf(stderr, "  hash   = ");
-                                // for (i = 7; i >= 0; i--)
-                                //     fprintf(stderr, "%08x", hash[i]);
-                                // fprintf(stderr, "\n");
-
-                                hashes_done = work.data[19] - start_nonce;
-                                rc = 1;
-                                break;
-                            }
-                        }
-                        work.data[19]++;
-                    } while (work.data[19] < max_nonce && !work_restart[thr_id].restart);
-                    hashes_done = work.data[19] - start_nonce;
-
-                    break;
+			break;
                 }
 		default:
 			/* should never happen */

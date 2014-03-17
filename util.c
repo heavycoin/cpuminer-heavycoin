@@ -35,6 +35,8 @@
 #include "miner.h"
 #include "elist.h"
 
+extern enum sha256_algos opt_algo;
+
 struct data_buffer {
 	void		*buf;
 	size_t		len;
@@ -983,6 +985,7 @@ out:
 static bool stratum_notify(struct stratum_ctx *sctx, json_t *params)
 {
 	const char *job_id, *prevhash, *coinb1, *coinb2, *version, *nbits, *ntime;
+	const char *nreward, *nmaxvote;
 	size_t coinb1_size, coinb2_size;
 	bool clean, ret = false;
 	int merkle_count, i;
@@ -1001,12 +1004,27 @@ static bool stratum_notify(struct stratum_ctx *sctx, json_t *params)
 	nbits = json_string_value(json_array_get(params, 6));
 	ntime = json_string_value(json_array_get(params, 7));
 	clean = json_is_true(json_array_get(params, 8));
+	if (opt_algo == ALGO_HEAVY) {
+		nreward = json_string_value(json_array_get(params, 9));
+		nmaxvote = json_string_value(json_array_get(params, 10));
+	}
 
-	if (!job_id || !prevhash || !coinb1 || !coinb2 || !version || !nbits || !ntime ||
-	    strlen(prevhash) != 64 || strlen(version) != 8 ||
-	    strlen(nbits) != 8 || strlen(ntime) != 8) {
-		applog(LOG_ERR, "Stratum notify: invalid parameters");
-		goto out;
+	if (opt_algo == ALGO_HEAVY) {
+		if (!job_id || !prevhash || !coinb1 || !coinb2 || !version || !nbits || !ntime
+		    || !nreward ||  !nmaxvote || strlen(prevhash) != 64 || strlen(version) != 8 ||
+		    strlen(nbits) != 8 || strlen(ntime) != 8 || strlen(nreward) != 4
+		    || strlen(nmaxvote) != 4) {
+			applog(LOG_ERR, "Stratum notify: invalid parameters");
+			goto out;
+		}
+	}
+	else {
+		if (!job_id || !prevhash || !coinb1 || !coinb2 || !version || !nbits || !ntime ||
+		    strlen(prevhash) != 64 || strlen(version) != 8 ||
+		    strlen(nbits) != 8 || strlen(ntime) != 8) {
+			applog(LOG_ERR, "Stratum notify: invalid parameters");
+			goto out;
+		}
 	}
 	merkle = malloc(merkle_count * sizeof(char *));
 	for (i = 0; i < merkle_count; i++) {
@@ -1049,6 +1067,10 @@ static bool stratum_notify(struct stratum_ctx *sctx, json_t *params)
 	hex2bin(sctx->job.version, version, 4);
 	hex2bin(sctx->job.nbits, nbits, 4);
 	hex2bin(sctx->job.ntime, ntime, 4);
+	if (opt_algo == ALGO_HEAVY) {
+		hex2bin(sctx->job.nreward, nreward, 2);
+		hex2bin(sctx->job.nmaxvote, nmaxvote, 2);
+	}
 	sctx->job.clean = clean;
 
 	sctx->job.diff = sctx->next_diff;

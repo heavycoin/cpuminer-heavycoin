@@ -28,12 +28,15 @@ AC_CHECK_HEADERS([sys/sysctl.h], [], [],
 #endif
 ])
 
-AC_CHECK_DECLS([be32dec, le32dec, be32enc, le32enc], [], [],
+AC_CHECK_DECLS([be32dec, le32dec, be32enc, le32enc, be16dec, be16enc,  le16dec, le16enc], [], [],
 [AC_INCLUDES_DEFAULT
 #ifdef HAVE_SYS_ENDIAN_H
 #include <sys/endian.h>
 #endif
 ])
+
+AC_CHECK_LIB([ssl], [SSL_library_init], [], [AC_MSG_ERROR([OpenSSL library required])])
+AC_CHECK_LIB([crypto], [EVP_DigestFinal_ex], [], [AC_MSG_ERROR([OpenSSL library required])])
 
 AC_FUNC_ALLOCA
 AC_CHECK_FUNCS([getopt_long])

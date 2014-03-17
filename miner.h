@@ -48,6 +48,12 @@ enum {
 };
 #endif
 
+enum sha256_algos {
+        ALGO_SCRYPT,            /* scrypt(1024,1,1) */
+        ALGO_SHA256D,           /* SHA-256d */
+        ALGO_HEAVY,             /* Heavycoin hash */
+};
+
 #undef unlikely
 #undef likely
 #if defined(__GNUC__) && (__GNUC__ > 2) && defined(__OPTIMIZE__)
@@ -62,6 +68,12 @@ enum {
 #define ARRAY_SIZE(arr) (sizeof(arr) / sizeof((arr)[0]))
 #endif
 
+#if defined(__GNUC__)
+#define DATA_ALIGN64(x) x __attribute__ ((aligned(64)))
+#else
+#define DATA_ALIGN64(x) __declspec(align(64)) x
+#endif
+
 #if ((__GNUC__ > 4) || (__GNUC__ == 4 && __GNUC_MINOR__ >= 3))
 #define WANT_BUILTIN_BSWAP
 #else
@@ -72,10 +84,15 @@ enum {
 static inline uint32_t swab32(uint32_t v)
 {
 #ifdef WANT_BUILTIN_BSWAP
-	return __builtin_bswap32(v);
+       return __builtin_bswap32(v);
 #else
-	return bswap_32(v);
+       return bswap_32(v);
 #endif
+}
+
+static inline uint16_t swab16(uint16_t v)
+{
+    return ((((v) << 8) & 0xff00) | (((v) >> 8) & 0x00ff));
 }
 
 #ifdef HAVE_SYS_ENDIAN_H
@@ -122,6 +139,40 @@ static inline void le32enc(void *pp, uint32_t x)
 }
 #endif
 
+#if !HAVE_DECL_BE16DEC
+static inline uint16_t be16dec(const void *pp)
+{
+	const uint8_t *p = (uint8_t const *)pp;
+	return ((uint16_t)(p[1]) + ((uint16_t)(p[0]) << 8));
+}
+#endif
+
+#if !HAVE_DECL_BE16ENC
+static inline void be16enc(void *pp, uint16_t x)
+{
+	uint8_t *p = (uint8_t *)pp;
+	p[1] = x & 0xff;
+	p[0] = (x >> 8) & 0xff;
+}
+#endif
+
+#if !HAVE_DECL_LE16DEC
+static inline uint16_t le16dec(const void *pp)
+{
+	const uint8_t *p = (uint8_t const *)pp;
+	return ((uint16_t)(p[0]) + ((uint16_t)(p[1]) << 8));
+}
+#endif
+
+#if !HAVE_DECL_LE16ENC
+static inline void le16enc(void *pp, uint16_t x)
+{
+	uint8_t *p = (uint8_t *)pp;
+	p[0] = x & 0xff;
+	p[1] = (x >> 8) & 0xff;
+}
+#endif
+
 #if JANSSON_MAJOR_VERSION >= 2
 #define JSON_LOADS(str, err_ptr) json_loads((str), 0, (err_ptr))
 #else
@@ -156,7 +207,8 @@ extern int scanhash_scrypt(int thr_id, uint32_t *pdata,
 	unsigned char *scratchbuf, const uint32_t *ptarget,
 	uint32_t max_nonce, unsigned long *hashes_done);
 
-extern void heavycoin_hash(const char* input, char* output);
+extern void heavycoin_hash(const char* input, char* output, int len);
+extern int heavycoin_scanhash(unsigned char* output, const unsigned char* input, int len);
 
 struct thr_info {
 	int		id;
@@ -207,6 +259,8 @@ struct stratum_job {
 	unsigned char version[4];
 	unsigned char nbits[4];
 	unsigned char ntime[4];
+	unsigned char nreward[2];
+	unsigned char nmaxvote[2];
 	bool clean;
 	double diff;
 };
