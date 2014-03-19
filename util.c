@@ -1011,9 +1011,8 @@ static bool stratum_notify(struct stratum_ctx *sctx, json_t *params)
 
 	if (opt_algo == ALGO_HEAVY) {
 		if (!job_id || !prevhash || !coinb1 || !coinb2 || !version || !nbits || !ntime
-		    || !nreward ||  !nmaxvote || strlen(prevhash) != 64 || strlen(version) != 8 ||
-		    strlen(nbits) != 8 || strlen(ntime) != 8 || strlen(nreward) != 4
-		    || strlen(nmaxvote) != 4) {
+		    || !nreward || strlen(prevhash) != 64 || strlen(version) != 8 ||
+		    strlen(nbits) != 8 || strlen(ntime) != 8 || strlen(nreward) != 4) {
 			applog(LOG_ERR, "Stratum notify: invalid parameters");
 			goto out;
 		}
@@ -1069,7 +1068,10 @@ static bool stratum_notify(struct stratum_ctx *sctx, json_t *params)
 	hex2bin(sctx->job.ntime, ntime, 4);
 	if (opt_algo == ALGO_HEAVY) {
 		hex2bin(sctx->job.nreward, nreward, 2);
-		hex2bin(sctx->job.nmaxvote, nmaxvote, 2);
+		if (nmaxvote)
+			hex2bin(sctx->job.nmaxvote, nmaxvote, 2);
+                else
+			hex2bin(sctx->job.nmaxvote, "0400", 2);
 	}
 	sctx->job.clean = clean;
 
